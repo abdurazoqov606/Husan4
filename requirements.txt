@@ -1,0 +1,5 @@
+pyTelegramBotAPI==4.15.4
+aiohttp>=3.9.3
+requests>=2.31.0
+yt-dlp>=2024.3.10
+aiogram>=3.4.0
