@@ -39,7 +39,6 @@ os.makedirs("hosted_bots", exist_ok=True)
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Barcha foydalanuvchilar va ularning balansi uchun yagona jadval
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -94,7 +93,15 @@ def get_user_balance(user_id):
     return row[0] if row else 0
 
 def add_balance(user_id, amount):
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    # Agar user bazada yo'q bo'lsa, yaratib keyin pul qo'shadi
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    else:
+        cursor.execute('''
+            INSERT INTO users (user_id, username, first_name, balance, referrer_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, "", "Foydalanuvchi", amount, 0, datetime.now().isoformat()))
     conn.commit()
 
 def deduct_balance(user_id, amount):
@@ -107,7 +114,14 @@ def is_premium(user_id):
     return row[0] == 1 if row else False
 
 def set_premium(user_id, status=1):
-    cursor.execute("UPDATE users SET is_premium = ? WHERE user_id = ?", (status, user_id))
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE users SET is_premium = ? WHERE user_id = ?", (status, user_id))
+    else:
+        cursor.execute('''
+            INSERT INTO users (user_id, username, first_name, balance, referrer_id, is_premium, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, "", "Foydalanuvchi", 0, 0, status, datetime.now().isoformat()))
     conn.commit()
 
 def get_user_bots(user_id):
@@ -202,6 +216,12 @@ def referral_menu(m):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🚀 Do'stlarga yuborish", url=f"https://t.me/share/url?url={ref_link}&text=Zo'r bot yaratish platformasi!"))
     bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text == "🚀 Saytga kirish")
+def website_link(m):
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🌐 Saytga o'tish", url="http://abdurazokhov.carrd.co"))
+    bot.send_message(m.chat.id, "👇 Quyidagi tugmani bosib bizning rasmiy saytimizga tashrif buyuring:", parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text in ["💳 Hisob to'ldirish", "💬 Murojaat"])
 def topup(m):
