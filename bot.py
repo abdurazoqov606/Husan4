@@ -146,31 +146,44 @@ def delete_user_bot(bot_id, user_id):
     cursor.execute("DELETE FROM user_bots WHERE id = ? AND user_id = ?", (bot_id, user_id))
     conn.commit()
 
-# AQLLI HOSTING MEXANIZMI
+# ================= AQLLI HOSTING MEXANIZMI =================
 def host_bot(bot_type, bot_token, chat_id, user_id):
     code_path = BOT_CODES.get(bot_type)
     if not code_path or not os.path.exists(code_path):
-        return False, "Bot kodi (shablon) topilmadi! 'hosted_bots' papkasini tekshiring."
+        return False, f"Bot shabloni topilmadi! ({code_path})"
         
     with open(code_path, 'r', encoding='utf-8') as f:
         code = f.read()
     
-    # Koddagi token va id ni RegEx bilan majburlab almashtirish (100% aniqlik uchun)
-    code = re.sub(r'BOT_TOKEN\s*=\s*["\'].*?["\']', f'BOT_TOKEN = "{bot_token}"', code)
+    # Koddagi token va id ni RegEx bilan majburlab almashtirish
+    code = re.sub(r'^BOT_TOKEN\s*=\s*["\'].*?["\']', f'BOT_TOKEN = "{bot_token}"', code, flags=re.MULTILINE)
     code = re.sub(r'^TOKEN\s*=\s*["\'].*?["\']', f'TOKEN = "{bot_token}"', code, flags=re.MULTILINE)
-    code = re.sub(r'ADMIN_ID_STR\s*=\s*["\'].*?["\']', f'ADMIN_ID_STR = "{chat_id}"', code)
-    code = re.sub(r'^ADMIN\s*=\s*\d+', f'ADMIN = {chat_id}', code, flags=re.MULTILINE)
-    code = re.sub(r'^ADMIN_ID\s*=\s*\d+', f'ADMIN_ID = {chat_id}', code, flags=re.MULTILINE)
+    code = re.sub(r'^ADMIN_ID_STR\s*=\s*["\'].*?["\']', f'ADMIN_ID_STR = "{chat_id}"', code, flags=re.MULTILINE)
+    
+    # Telegram Webhook muammosini avtomatik tuzatish
+    if "aiogram" in code and "start_polling" in code:
+        code = code.replace("await dp.start_polling(bot)", "await bot.delete_webhook(drop_pending_updates=True)\n    await dp.start_polling(bot)")
+    if "telebot" in code and "infinity_polling" in code:
+        code = code.replace("bot.infinity_polling(", "try: bot.remove_webhook()\nexcept: pass\nbot.infinity_polling(")
     
     bot_filename = f"hosted_bots/bot_{user_id}_{bot_type}_{int(time.time())}.py"
     with open(bot_filename, 'w', encoding='utf-8') as f:
         f.write(code)
         
     # Xatoliklarni ushlab olish uchun Log fayl yaratish
-    log_file = open(f"hosted_bots/log_{user_id}_{bot_type}.txt", "w")
+    log_filename = f"hosted_bots/log_{user_id}_{bot_type}.txt"
+    log_file = open(log_filename, "w")
     
     try:
-        subprocess.Popen([sys.executable, bot_filename], stdout=log_file, stderr=log_file, start_new_session=True)
+        proc = subprocess.Popen([sys.executable, bot_filename], stdout=log_file, stderr=log_file, start_new_session=True)
+        
+        # Kutamiz, agar bot birdan o'chib qolsa, xatoni darhol o'qib qaytaramiz
+        time.sleep(2)
+        if proc.poll() is not None:  
+            with open(log_filename, "r") as lf:
+                error_text = lf.read()
+            return False, f"Python Xatosi (Bot quladi):\n{error_text[-500:]}"
+            
         return True, bot_filename
     except Exception as e:
         return False, str(e)
@@ -205,7 +218,7 @@ def start_command(message):
         except: pass
     
     add_user(uid, username, first_name, ref)
-    user_states.pop(uid, None) # Statelarni tozalash
+    user_states.pop(uid, None) 
     text = f"✨ <b>Assalomu alaykum, {first_name}! VSF Hosting Botga xush kelibsiz</b> ✨\n\nBu yerda o'z shaxsiy premium botlaringizni yaratishingiz mumkin."
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=main_menu())
 
@@ -258,6 +271,7 @@ def my_bots(m):
         status_emoji = "🟢" if status == "running" else "🔴"
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 To‘xtatish" if status=="running" else "▶️ Ishga tushirish", callback_data=f"toggle_{b[0]}"))
+        markup.add(InlineKeyboardButton("📄 Xatolikni ko'rish (Log)", callback_data=f"log_{b[0]}"))
         markup.add(InlineKeyboardButton("🗑 O‘chirish", callback_data=f"delete_{b[0]}"))
         bot.send_message(uid, f"{status_emoji} <b>{name}</b>\nTuri: {bot_type}\nHolati: {status.capitalize()}", parse_mode="HTML", reply_markup=markup)
 
@@ -279,7 +293,6 @@ def user_callbacks(call):
             bot.send_message(uid, f"❌ <b>Mablag‘ yetarli emas!</b>\n\nKerakli summa: {price:,} so‘m\nSizning balansingiz: {bal:,} so‘m", parse_mode="HTML", reply_markup=markup)
             return
             
-        # Xavfsiz Xotira (State) ga saqlaymiz
         user_states[uid] = bot_type
         bot.send_message(uid, "✅ <b>So'rov qabul qilindi!</b>\n\n📌 <b>Bot ma'lumotlarini yuboring:</b>\n1. @BotFather dan Token oling.\n2. Quyidagi formatda yuboring:\n<code>TOKEN|CHAT_ID</code>\n\nMisol: <code>123456:ABCdefGHI|123456789</code>", parse_mode="HTML")
         
@@ -299,8 +312,24 @@ def user_callbacks(call):
         delete_user_bot(bot_id, uid)
         bot.answer_callback_query(call.id, "✅ Bot muvaffaqiyatli o‘chirildi")
         bot.delete_message(call.message.chat.id, call.message.message_id)
+        
+    elif call.data.startswith("log_"):
+        bot_id = int(call.data[4:])
+        cursor.execute("SELECT bot_type FROM user_bots WHERE id=? AND user_id=?", (bot_id, uid))
+        row = cursor.fetchone()
+        if row:
+            log_path = f"hosted_bots/log_{uid}_{row[0]}.txt"
+            if os.path.exists(log_path):
+                with open(log_path, "r") as f:
+                    content = f.read()[-3000:]
+                if content.strip():
+                    bot.send_message(uid, f"📄 <b>Log (Xatoliklar):</b>\n<pre>{content}</pre>", parse_mode="HTML")
+                else:
+                    bot.send_message(uid, "✅ Log fayli bo'sh, botda hech qanday xatolik yo'q.")
+            else:
+                bot.send_message(uid, "📄 Log fayli topilmadi. Bot hali ishga tushirilmagan.")
 
-# STATE HANDLER (Faqat token kutayotgan foydalanuvchilar uchun)
+# ================= STATE HANDLER =================
 @bot.message_handler(func=lambda m: m.from_user.id in user_states)
 def process_token(message):
     uid = message.from_user.id
@@ -335,9 +364,8 @@ def process_token(message):
         update_bot_status(bid, "running")
         bot.send_message(uid, f"✅ <b>Bot muvaffaqiyatli ishga tushdi!</b>\n\nNomi: {bot_name}\nUsername: @{bot_info.username}\n\n<i>Boshqarish uchun <b>🤖 Botlarim</b> bo'limiga o'ting.</i>", parse_mode="HTML")
     else:
-        # Xatolik bo'lsa pulni qaytarib beramiz
         add_balance(uid, PRICES.get(bot_type, 0))
-        bot.send_message(uid, f"❌ Xatolik yuz berdi: {str_result}\n\nPulingiz hisobingizga qaytarildi.")
+        bot.send_message(uid, f"❌ <b>Xatolik yuz berdi!</b> Pulingiz qaytarildi.\n\n<b>Xato:</b>\n<pre>{str_result}</pre>", parse_mode="HTML")
 
 # ================= ADMIN PANEL =================
 @bot.message_handler(commands=['admin'])
@@ -406,15 +434,4 @@ async def start_web():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
-    while True:
-        await asyncio.sleep(3600)
-
-def run_telegram():
-    print("VSF Builder Bot ishga tushdi...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
-if __name__ == "__main__":
-    threading.Thread(target=run_telegram, daemon=True).start()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_web())
+    while True
