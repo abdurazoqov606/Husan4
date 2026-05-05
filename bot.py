@@ -155,12 +155,10 @@ def host_bot(bot_type, bot_token, chat_id, user_id):
     with open(code_path, 'r', encoding='utf-8') as f:
         code = f.read()
     
-    # Koddagi token va id ni RegEx bilan majburlab almashtirish
     code = re.sub(r'^BOT_TOKEN\s*=\s*["\'].*?["\']', f'BOT_TOKEN = "{bot_token}"', code, flags=re.MULTILINE)
     code = re.sub(r'^TOKEN\s*=\s*["\'].*?["\']', f'TOKEN = "{bot_token}"', code, flags=re.MULTILINE)
     code = re.sub(r'^ADMIN_ID_STR\s*=\s*["\'].*?["\']', f'ADMIN_ID_STR = "{chat_id}"', code, flags=re.MULTILINE)
     
-    # Telegram Webhook muammosini avtomatik tuzatish
     if "aiogram" in code and "start_polling" in code:
         code = code.replace("await dp.start_polling(bot)", "await bot.delete_webhook(drop_pending_updates=True)\n    await dp.start_polling(bot)")
     if "telebot" in code and "infinity_polling" in code:
@@ -170,14 +168,11 @@ def host_bot(bot_type, bot_token, chat_id, user_id):
     with open(bot_filename, 'w', encoding='utf-8') as f:
         f.write(code)
         
-    # Xatoliklarni ushlab olish uchun Log fayl yaratish
     log_filename = f"hosted_bots/log_{user_id}_{bot_type}.txt"
     log_file = open(log_filename, "w")
     
     try:
         proc = subprocess.Popen([sys.executable, bot_filename], stdout=log_file, stderr=log_file, start_new_session=True)
-        
-        # Kutamiz, agar bot birdan o'chib qolsa, xatoni darhol o'qib qaytaramiz
         time.sleep(2)
         if proc.poll() is not None:  
             with open(log_filename, "r") as lf:
@@ -290,11 +285,11 @@ def user_callbacks(call):
         if bal < price and not is_premium(uid):
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("💰 Hisob to‘ldirish", url="https://t.me/vsf911"))
-            bot.send_message(uid, f"❌ <b>Mablag‘ yetarli emas!</b>\n\nKerakli summa: {price:,} so‘m\nSizning balansingiz: {bal:,} so‘m", parse_mode="HTML", reply_markup=markup)
+            bot.send_message(uid, f"❌ <b>Mablag‘ yetarli emas!</b>\n\nSumma: {price:,} so‘m\nBalans: {bal:,} so‘m", parse_mode="HTML", reply_markup=markup)
             return
             
         user_states[uid] = bot_type
-        bot.send_message(uid, "✅ <b>So'rov qabul qilindi!</b>\n\n📌 <b>Bot ma'lumotlarini yuboring:</b>\n1. @BotFather dan Token oling.\n2. Quyidagi formatda yuboring:\n<code>TOKEN|CHAT_ID</code>\n\nMisol: <code>123456:ABCdefGHI|123456789</code>", parse_mode="HTML")
+        bot.send_message(uid, "✅ <b>Token va Chat ID yuboring:</b>\nFormat: <code>TOKEN|CHAT_ID</code>", parse_mode="HTML")
         
     elif call.data.startswith("toggle_"):
         bot_id = int(call.data[7:])
@@ -310,7 +305,7 @@ def user_callbacks(call):
     elif call.data.startswith("delete_"):
         bot_id = int(call.data[7:])
         delete_user_bot(bot_id, uid)
-        bot.answer_callback_query(call.id, "✅ Bot muvaffaqiyatli o‘chirildi")
+        bot.answer_callback_query(call.id, "✅ Bot o‘chirildi")
         bot.delete_message(call.message.chat.id, call.message.message_id)
         
     elif call.data.startswith("log_"):
@@ -322,109 +317,68 @@ def user_callbacks(call):
             if os.path.exists(log_path):
                 with open(log_path, "r") as f:
                     content = f.read()[-3000:]
-                if content.strip():
-                    bot.send_message(uid, f"📄 <b>Log (Xatoliklar):</b>\n<pre>{content}</pre>", parse_mode="HTML")
-                else:
-                    bot.send_message(uid, "✅ Log fayli bo'sh, botda hech qanday xatolik yo'q.")
-            else:
-                bot.send_message(uid, "📄 Log fayli topilmadi. Bot hali ishga tushirilmagan.")
+                bot.send_message(uid, f"📄 <b>Log:</b>\n<pre>{content or 'Boʻsh'}</pre>", parse_mode="HTML")
 
-# ================= STATE HANDLER =================
 @bot.message_handler(func=lambda m: m.from_user.id in user_states)
 def process_token(message):
     uid = message.from_user.id
     text = message.text.strip()
-    
     if "|" not in text:
-        bot.send_message(uid, "❌ Noto‘g‘ri format! Amaliyot bekor qilindi. Boshqatdan urinib ko'ring.", parse_mode="HTML")
+        bot.send_message(uid, "❌ Xato format!")
         user_states.pop(uid, None)
         return
         
     bot_type = user_states.pop(uid)
     token, chat_id = text.split("|", 1)
-    token, chat_id = token.strip(), chat_id.strip()
     
     try:
-        tb = telebot.TeleBot(token)
+        tb = telebot.TeleBot(token.strip())
         bot_info = tb.get_me()
         bot_name = bot_info.first_name
     except:
-        bot.send_message(uid, "❌ Token yaroqsiz! Iltimos, @BotFather bergan tokenni to'g'ri nusxalang.")
+        bot.send_message(uid, "❌ Token xato!")
         return
         
     if not is_premium(uid):
-        price = PRICES.get(bot_type, 0)
-        deduct_balance(uid, price)
+        deduct_balance(uid, PRICES.get(bot_type, 0))
         
-    bot.send_message(uid, "⚙️ Botingiz tayyorlanmoqda va serverga joylanmoqda...")
-    success, str_result = host_bot(bot_type, token, chat_id, uid)
+    bot.send_message(uid, "⚙️ Tayyorlanmoqda...")
+    success, str_result = host_bot(bot_type, token.strip(), chat_id.strip(), uid)
     
     if success:
-        bid = add_user_bot(uid, bot_type, token, chat_id, bot_name)
+        bid = add_user_bot(uid, bot_type, token.strip(), chat_id.strip(), bot_name)
         update_bot_status(bid, "running")
-        bot.send_message(uid, f"✅ <b>Bot muvaffaqiyatli ishga tushdi!</b>\n\nNomi: {bot_name}\nUsername: @{bot_info.username}\n\n<i>Boshqarish uchun <b>🤖 Botlarim</b> bo'limiga o'ting.</i>", parse_mode="HTML")
+        bot.send_message(uid, f"✅ <b>{bot_name}</b> ishga tushdi!", parse_mode="HTML")
     else:
         add_balance(uid, PRICES.get(bot_type, 0))
-        bot.send_message(uid, f"❌ <b>Xatolik yuz berdi!</b> Pulingiz qaytarildi.\n\n<b>Xato:</b>\n<pre>{str_result}</pre>", parse_mode="HTML")
+        bot.send_message(uid, f"❌ Xato:\n<pre>{str_result}</pre>", parse_mode="HTML")
 
-# ================= ADMIN PANEL =================
 @bot.message_handler(commands=['admin'])
 def admin_panel(m):
     if m.from_user.id != ADMIN_ID: return
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("💰 Pul qo'shish", callback_data="admin_add_funds"),
-        InlineKeyboardButton("💎 Premium berish", callback_data="admin_give_premium")
-    )
-    markup.add(InlineKeyboardButton("📊 Statistika", callback_data="admin_stats"))
-    bot.send_message(m.chat.id, "👑 <b>Admin Panelga xush kelibsiz!</b>\nKerakli bo'limni tanlang:", parse_mode="HTML", reply_markup=markup)
+    markup.add(InlineKeyboardButton("💰 Pul qo'shish", callback_data="admin_add_funds"), InlineKeyboardButton("📊 Stat", callback_data="admin_stats"))
+    bot.send_message(m.chat.id, "👑 Admin Panel", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_callbacks(call):
     if call.from_user.id != ADMIN_ID: return
-    
     if call.data == "admin_add_funds":
-        msg = bot.send_message(call.message.chat.id, "💰 <b>Hisob to'ldirish</b>\n\n<i>Foydalanuvchi IDsi va Summani probel bilan yozing:</i>\nMisol: <code>123456789 50000</code>", parse_mode="HTML")
+        msg = bot.send_message(call.message.chat.id, "ID SUMMA yuboring:")
         bot.register_next_step_handler(msg, admin_process_funds)
-        
-    elif call.data == "admin_give_premium":
-        msg = bot.send_message(call.message.chat.id, "💎 <b>Premium taqdim etish</b>\n\n<i>Foydalanuvchi IDsini yozing:</i>\nMisol: <code>123456789</code>", parse_mode="HTML")
-        bot.register_next_step_handler(msg, admin_process_premium)
-        
     elif call.data == "admin_stats":
         cursor.execute("SELECT COUNT(*) FROM users")
-        users_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM user_bots")
-        bots_count = cursor.fetchone()[0]
-        bot.edit_message_text(f"📊 <b>Platforma Statistikasi:</b>\n\n👥 Foydalanuvchilar: <b>{users_count} ta</b>\n🤖 Yaratilgan botlar: <b>{bots_count} ta</b>", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+        bot.edit_message_text(f"Foydalanuvchilar: {cursor.fetchone()[0]}", call.message.chat.id, call.message.message_id)
 
 def admin_process_funds(message):
-    if message.from_user.id != ADMIN_ID: return
     try:
-        user_id, amount = message.text.split()
-        user_id, amount = int(user_id), int(amount)
-        add_balance(user_id, amount)
-        bot.send_message(ADMIN_ID, f"✅ <b>{user_id}</b> hisobiga <b>{amount:,} so'm</b> qo'shildi!", parse_mode="HTML")
-        try:
-            bot.send_message(user_id, f"💸 <b>Hisobingiz to'ldirildi!</b>\nMa'muriyat tomonidan hisobingizga <b>{amount:,} so'm</b> tushirildi.", parse_mode="HTML")
-        except: pass
-    except:
-        bot.send_message(ADMIN_ID, "❌ Noto'g'ri format! (Misol: 123456789 50000)")
+        uid, amt = message.text.split()
+        add_balance(int(uid), int(amt))
+        bot.send_message(ADMIN_ID, "✅ Qo'shildi")
+    except: pass
 
-def admin_process_premium(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        user_id = int(message.text.strip())
-        set_premium(user_id, 1)
-        bot.send_message(ADMIN_ID, f"✅ <b>{user_id}</b> endi Premium foydalanuvchi!", parse_mode="HTML")
-        try:
-            bot.send_message(user_id, f"💎 <b>Tabriklaymiz!</b>\nSizga ma'muriyat tomonidan <b>Premium</b> maqomi berildi. Endi botlarni bepul yarata olasiz!", parse_mode="HTML")
-        except: pass
-    except:
-        bot.send_message(ADMIN_ID, "❌ Noto'g'ri ID!")
-# ================= WEB SERVER =================
 async def health_check(request):
-    return web.Response(text="VSF Builder Bot ishlamoqda! 🚀")
+    return web.Response(text="Bot is running!")
 
 async def start_web():
     app = web.Application()
@@ -433,4 +387,15 @@ async def start_web():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
-    while True
+    while True: # <--- IKKI NUQTA MANA SHU YERDA!
+        await asyncio.sleep(3600)
+
+def run_telegram():
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_telegram, daemon=True).start()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_web())
+            
