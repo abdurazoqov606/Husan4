@@ -422,7 +422,6 @@ def admin_process_premium(message):
         except: pass
     except:
         bot.send_message(ADMIN_ID, "❌ Noto'g'ri ID!")
-
 # ================= WEB SERVER =================
 async def health_check(request):
     return web.Response(text="VSF Builder Bot ishlamoqda! 🚀")
