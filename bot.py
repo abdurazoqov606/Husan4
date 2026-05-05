@@ -6,6 +6,7 @@ import subprocess
 import os
 import sys
 import asyncio
+import re
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import requests
@@ -25,13 +26,15 @@ PRICES = {
     "sms_bomber": 20000
 }
 
-# Child bot fayllari (hosted_bots/ papkasida)
 BOT_CODES = {
     "video_downloader": "hosted_bots/video_downloader.py",
     "ai_image": "hosted_bots/ai_image.py",
     "ai_video": "hosted_bots/ai_video.py",
     "sms_bomber": "hosted_bots/sms_bomber.py"
 }
+
+# ================= XAVFSIZ XOTIRA =================
+user_states = {}
 
 # ================= DATABASE =================
 os.makedirs("hosted_bots", exist_ok=True)
@@ -93,7 +96,6 @@ def get_user_balance(user_id):
     return row[0] if row else 0
 
 def add_balance(user_id, amount):
-    # Agar user bazada yo'q bo'lsa, yaratib keyin pul qo'shadi
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     if cursor.fetchone():
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
@@ -144,23 +146,31 @@ def delete_user_bot(bot_id, user_id):
     cursor.execute("DELETE FROM user_bots WHERE id = ? AND user_id = ?", (bot_id, user_id))
     conn.commit()
 
+# AQLLI HOSTING MEXANIZMI
 def host_bot(bot_type, bot_token, chat_id, user_id):
     code_path = BOT_CODES.get(bot_type)
     if not code_path or not os.path.exists(code_path):
-        return False, "Bot kodi topilmadi!"
+        return False, "Bot kodi (shablon) topilmadi! 'hosted_bots' papkasini tekshiring."
+        
     with open(code_path, 'r', encoding='utf-8') as f:
         code = f.read()
     
-    # Token va chat_id ni avtomatik almashtirish
-    code = code.replace('BOT_TOKEN = "BOT_TOKEN"', f'BOT_TOKEN = "{bot_token}"')
-    code = code.replace('ADMIN_ID_STR = "ADMIN_ID"', f'ADMIN_ID_STR = "{chat_id}"')
+    # Koddagi token va id ni RegEx bilan majburlab almashtirish (100% aniqlik uchun)
+    code = re.sub(r'BOT_TOKEN\s*=\s*["\'].*?["\']', f'BOT_TOKEN = "{bot_token}"', code)
+    code = re.sub(r'^TOKEN\s*=\s*["\'].*?["\']', f'TOKEN = "{bot_token}"', code, flags=re.MULTILINE)
+    code = re.sub(r'ADMIN_ID_STR\s*=\s*["\'].*?["\']', f'ADMIN_ID_STR = "{chat_id}"', code)
+    code = re.sub(r'^ADMIN\s*=\s*\d+', f'ADMIN = {chat_id}', code, flags=re.MULTILINE)
+    code = re.sub(r'^ADMIN_ID\s*=\s*\d+', f'ADMIN_ID = {chat_id}', code, flags=re.MULTILINE)
     
     bot_filename = f"hosted_bots/bot_{user_id}_{bot_type}_{int(time.time())}.py"
     with open(bot_filename, 'w', encoding='utf-8') as f:
         f.write(code)
         
+    # Xatoliklarni ushlab olish uchun Log fayl yaratish
+    log_file = open(f"hosted_bots/log_{user_id}_{bot_type}.txt", "w")
+    
     try:
-        subprocess.Popen([sys.executable, bot_filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        subprocess.Popen([sys.executable, bot_filename], stdout=log_file, stderr=log_file, start_new_session=True)
         return True, bot_filename
     except Exception as e:
         return False, str(e)
@@ -195,6 +205,7 @@ def start_command(message):
         except: pass
     
     add_user(uid, username, first_name, ref)
+    user_states.pop(uid, None) # Statelarni tozalash
     text = f"✨ <b>Assalomu alaykum, {first_name}! VSF Hosting Botga xush kelibsiz</b> ✨\n\nBu yerda o'z shaxsiy premium botlaringizni yaratishingiz mumkin."
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=main_menu())
 
@@ -268,11 +279,9 @@ def user_callbacks(call):
             bot.send_message(uid, f"❌ <b>Mablag‘ yetarli emas!</b>\n\nKerakli summa: {price:,} so‘m\nSizning balansingiz: {bal:,} so‘m", parse_mode="HTML", reply_markup=markup)
             return
             
-        if not is_premium(uid):
-            deduct_balance(uid, price)
-            
-        msg = bot.send_message(uid, "✅ <b>To‘lov qabul qilindi!</b>\n\n📌 <b>Bot ma'lumotlarini yuboring:</b>\n1. @BotFather dan Token oling.\n2. Quyidagi formatda yuboring:\n<code>TOKEN|CHAT_ID</code>\n\nMisol: <code>123456:ABCdefGHI|123456789</code>", parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_token, bot_type)
+        # Xavfsiz Xotira (State) ga saqlaymiz
+        user_states[uid] = bot_type
+        bot.send_message(uid, "✅ <b>So'rov qabul qilindi!</b>\n\n📌 <b>Bot ma'lumotlarini yuboring:</b>\n1. @BotFather dan Token oling.\n2. Quyidagi formatda yuboring:\n<code>TOKEN|CHAT_ID</code>\n\nMisol: <code>123456:ABCdefGHI|123456789</code>", parse_mode="HTML")
         
     elif call.data.startswith("toggle_"):
         bot_id = int(call.data[7:])
@@ -291,13 +300,18 @@ def user_callbacks(call):
         bot.answer_callback_query(call.id, "✅ Bot muvaffaqiyatli o‘chirildi")
         bot.delete_message(call.message.chat.id, call.message.message_id)
 
-def process_token(message, bot_type):
+# STATE HANDLER (Faqat token kutayotgan foydalanuvchilar uchun)
+@bot.message_handler(func=lambda m: m.from_user.id in user_states)
+def process_token(message):
     uid = message.from_user.id
     text = message.text.strip()
+    
     if "|" not in text:
-        bot.send_message(uid, "❌ Noto‘g‘ri format! Iltimos, <code>TOKEN|CHAT_ID</code> shaklida yuboring.", parse_mode="HTML")
+        bot.send_message(uid, "❌ Noto‘g‘ri format! Amaliyot bekor qilindi. Boshqatdan urinib ko'ring.", parse_mode="HTML")
+        user_states.pop(uid, None)
         return
         
+    bot_type = user_states.pop(uid)
     token, chat_id = text.split("|", 1)
     token, chat_id = token.strip(), chat_id.strip()
     
@@ -309,6 +323,10 @@ def process_token(message, bot_type):
         bot.send_message(uid, "❌ Token yaroqsiz! Iltimos, @BotFather bergan tokenni to'g'ri nusxalang.")
         return
         
+    if not is_premium(uid):
+        price = PRICES.get(bot_type, 0)
+        deduct_balance(uid, price)
+        
     bot.send_message(uid, "⚙️ Botingiz tayyorlanmoqda va serverga joylanmoqda...")
     success, str_result = host_bot(bot_type, token, chat_id, uid)
     
@@ -317,7 +335,9 @@ def process_token(message, bot_type):
         update_bot_status(bid, "running")
         bot.send_message(uid, f"✅ <b>Bot muvaffaqiyatli ishga tushdi!</b>\n\nNomi: {bot_name}\nUsername: @{bot_info.username}\n\n<i>Boshqarish uchun <b>🤖 Botlarim</b> bo'limiga o'ting.</i>", parse_mode="HTML")
     else:
-        bot.send_message(uid, f"❌ Xatolik yuz berdi: {str_result}")
+        # Xatolik bo'lsa pulni qaytarib beramiz
+        add_balance(uid, PRICES.get(bot_type, 0))
+        bot.send_message(uid, f"❌ Xatolik yuz berdi: {str_result}\n\nPulingiz hisobingizga qaytarildi.")
 
 # ================= ADMIN PANEL =================
 @bot.message_handler(commands=['admin'])
